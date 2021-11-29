@@ -1,9 +1,8 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.8;
+pragma solidity ^0.8.10;
 
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
-import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "../math/SafeMathUint.sol";
 import "../math/SafeMathInt.sol";
@@ -16,13 +15,10 @@ import "../interface/DividendPayingTokenOptionalInterface.sol";
 /// @dev A mintable ERC20 token that allows anyone to pay and distribute ether
 ///  to token holders as dividends and allows token holders to withdraw their dividends.
 ///  Reference: the source code of PoWH3D: https://etherscan.io/address/0xB3775fB83F7D12A36E0475aBdD1FCA35c091efBe#code
-contract DividendPayingToken is ERC20, Ownable, DividendPayingTokenInterface, DividendPayingTokenOptionalInterface {
+contract DividendPayingToken is ERC20, DividendPayingTokenInterface, DividendPayingTokenOptionalInterface {
   using SafeMath for uint256;
   using SafeMathUint for uint256;
   using SafeMathInt for int256;
-
-  address public immutable RewardToken; //RewardToken
-
 
   // With `magnitude`, we can properly distribute dividends even if the amount of received ether is small.
   // For more discussion about choosing the value of `magnitude`,
@@ -47,21 +43,38 @@ contract DividendPayingToken is ERC20, Ownable, DividendPayingTokenInterface, Di
 
   uint256 public totalDividendsDistributed;
 
-  constructor (string memory _name, string memory _symbol, address _rewardToken) ERC20(_name, _symbol) {
-    RewardToken = _rewardToken;
+  constructor(string memory _name, string memory _symbol) ERC20(_name, _symbol) {
+
   }
 
+  /// @dev Distributes dividends whenever ether is paid to this contract.
+  receive() external payable {
+    distributeDividends();
+  }
 
-  function distributeRewardToken(uint256 amount) public onlyOwner{
+  /// @notice Distributes ether to token holders as dividends.
+  /// @dev It reverts if the total supply of tokens is 0.
+  /// It emits the `DividendsDistributed` event if the amount of received ether is greater than 0.
+  /// About undistributed ether:
+  ///   In each distribution, there is a small amount of ether not distributed,
+  ///     the magnified amount of which is
+  ///     `(msg.value * magnitude) % totalSupply()`.
+  ///   With a well-chosen `magnitude`, the amount of undistributed ether
+  ///     (de-magnified) in a distribution can be less than 1 wei.
+  ///   We can actually keep track of the undistributed ether in a distribution
+  ///     and try to distribute it in the next distribution,
+  ///     but keeping track of such data on-chain costs much more than
+  ///     the saved ether, so we don't do that.
+  function distributeDividends() public override payable {
     require(totalSupply() > 0);
 
-    if (amount > 0) {
+    if (msg.value > 0) {
       magnifiedDividendPerShare = magnifiedDividendPerShare.add(
-        (amount).mul(magnitude) / totalSupply()
+        (msg.value).mul(magnitude) / totalSupply()
       );
-      emit DividendsDistributed(msg.sender, amount);
+      emit DividendsDistributed(msg.sender, msg.value);
 
-      totalDividendsDistributed = totalDividendsDistributed.add(amount);
+      totalDividendsDistributed = totalDividendsDistributed.add(msg.value);
     }
   }
 
@@ -73,12 +86,12 @@ contract DividendPayingToken is ERC20, Ownable, DividendPayingTokenInterface, Di
 
   /// @notice Withdraws the ether distributed to the sender.
   /// @dev It emits a `DividendWithdrawn` event if the amount of withdrawn ether is greater than 0.
- function _withdrawDividendOfUser(address payable user) internal returns (uint256) {
+  function _withdrawDividendOfUser(address payable user) internal returns (uint256) {
     uint256 _withdrawableDividend = withdrawableDividendOf(user);
     if (_withdrawableDividend > 0) {
       withdrawnDividends[user] = withdrawnDividends[user].add(_withdrawableDividend);
       emit DividendWithdrawn(user, _withdrawableDividend);
-      bool success = IERC20(RewardToken).transfer(user, _withdrawableDividend);
+      (bool success,) = user.call{value: _withdrawableDividend, gas: 3000}("");
 
       if(!success) {
         withdrawnDividends[user] = withdrawnDividends[user].sub(_withdrawableDividend);

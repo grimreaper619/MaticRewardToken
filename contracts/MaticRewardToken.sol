@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.8;
+pragma solidity ^0.8.10;
 
 import "./misc/DividendPayingToken.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
@@ -11,52 +11,39 @@ import "@uniswap/v2-periphery/contracts/interfaces/IUniswapV2Router02.sol";
 contract TOKEN is ERC20, Ownable {
     using SafeMath for uint256;
 
-    struct BuyFee {
-        uint16 autoLp;
-        uint16 reward;
-        uint16 marketing;
-        uint16 dev;
-        uint16 giveAway;
-    }
-
-    struct SellFee {
-        uint16 autoLp;
-        uint16 reward;
-        uint16 marketing;
-        uint16 dev;
-        uint16 giveAway;
-        uint16 buyBack;
-    }
-
-    BuyFee public buyFee;
-    SellFee public sellFee;
-
     IUniswapV2Router02 public uniswapV2Router;
     address public uniswapV2Pair;
 
     bool private swapping;
-    bool public enableTrading;
-
-    uint16 private totalBuyFee;
-    uint16 private totalSellFee;
-
-    uint256 public timeDelay = 12 hours;
+    bool public isTradingEnabled;
 
     TOKENDividendTracker public dividendTracker;
 
     address private constant deadWallet = address(0xdead);
 
-    address private RewardToken =
-        address(0x77c21c770Db1156e271a3516F89380BA53D594FA); //RewardToken
-
     uint256 public swapTokensAtAmount = 2 * 10**6 * (10**18);
     uint256 public maxBuyAmount = 1 * 10**7 * 10**18;
     uint256 public maxSellAmount = 1 * 10**7 * 10**18;
     uint256 public maxWalletAmount = 1 * 10**8 * 10**18;
+    uint256 public buybackLimit = 0.1 ether;
 
-    address public marketing = address(0x1);
-    address public dev = address(0x2);
-    address public giveAway = address(0x3);
+    address public marketingWallet = address(0x123);
+    address public devWallet = address(0x456);
+    address public charityWallet = address(0x789);
+
+    uint8 public rewardsFee = 30;
+    uint8 public liquidityFee = 20;
+    uint8 public marketingFee = 40;
+    uint8 public charityFee = 20;
+    uint8 public devFee = 20;
+    uint8 public buybackFee = 20;
+    uint16 private totalFees =
+        rewardsFee +
+            liquidityFee +
+            marketingFee +
+            charityFee +
+            devFee +
+            buybackFee;
 
     // use by default 300,000 gas to process auto-claiming dividends
     uint256 public gasForProcessing = 300000;
@@ -113,7 +100,7 @@ contract TOKEN is ERC20, Ownable {
     );
 
     constructor() ERC20("TOKEN", "TKN") {
-        dividendTracker = new TOKENDividendTracker(RewardToken);
+        dividendTracker = new TOKENDividendTracker();
 
         IUniswapV2Router02 _uniswapV2Router = IUniswapV2Router02(
             0x9Ac64Cc6e4415144C455BD8E4837Fea55603e5c3
@@ -124,33 +111,6 @@ contract TOKEN is ERC20, Ownable {
 
         uniswapV2Router = _uniswapV2Router;
         uniswapV2Pair = _uniswapV2Pair;
-        enableTrading = true;
-
-        buyFee.autoLp = 20;
-        buyFee.reward = 20;
-        buyFee.marketing = 20;
-        buyFee.dev = 20;
-        buyFee.giveAway = 20;
-        totalBuyFee =
-            buyFee.autoLp +
-            buyFee.reward +
-            buyFee.marketing +
-            buyFee.dev +
-            buyFee.giveAway;
-
-        sellFee.autoLp = 30;
-        sellFee.reward = 30;
-        sellFee.marketing = 30;
-        sellFee.dev = 30;
-        sellFee.giveAway = 30;
-        sellFee.buyBack = 30;
-        totalSellFee =
-            sellFee.autoLp +
-            sellFee.reward +
-            sellFee.marketing +
-            sellFee.dev +
-            sellFee.giveAway +
-            sellFee.buyBack;
 
         _setAutomatedMarketMakerPair(_uniswapV2Pair, true);
 
@@ -163,7 +123,6 @@ contract TOKEN is ERC20, Ownable {
 
         // exclude from paying fees or having max transaction amount
         excludeFromFees(owner(), true);
-        excludeFromFees(marketing, true);
         excludeFromFees(address(this), true);
 
         /*
@@ -175,9 +134,19 @@ contract TOKEN is ERC20, Ownable {
 
     receive() external payable {}
 
-    function updateDividendTracker(address newToken) public onlyOwner {
-        TOKENDividendTracker newDividendTracker = new TOKENDividendTracker(
-            newToken
+    function updateDividendTracker(address newAddress) public onlyOwner {
+        require(
+            newAddress != address(dividendTracker),
+            "Token: The dividend tracker already has that address"
+        );
+
+        TOKENDividendTracker newDividendTracker = TOKENDividendTracker(
+            payable(newAddress)
+        );
+
+        require(
+            newDividendTracker.owner() == address(this),
+            "Token: The new dividend tracker must be owned by the Token token contract"
         );
 
         newDividendTracker.excludeFromDividends(address(newDividendTracker));
@@ -185,14 +154,12 @@ contract TOKEN is ERC20, Ownable {
         newDividendTracker.excludeFromDividends(owner());
         newDividendTracker.excludeFromDividends(address(uniswapV2Router));
 
-        RewardToken = newToken;
-        dividendTracker = newDividendTracker;
+        emit UpdateDividendTracker(newAddress, address(dividendTracker));
 
-        emit UpdateDividendTracker(newToken, address(dividendTracker));
+        dividendTracker = newDividendTracker;
     }
 
     function updateUniswapV2Router(address newAddress) public onlyOwner {
-        
         emit UpdateUniswapV2Router(newAddress, address(uniswapV2Router));
         uniswapV2Router = IUniswapV2Router02(newAddress);
         address _uniswapV2Pair = IUniswapV2Factory(uniswapV2Router.factory())
@@ -201,7 +168,6 @@ contract TOKEN is ERC20, Ownable {
     }
 
     function excludeFromFees(address account, bool excluded) public onlyOwner {
-
         _isExcludedFromFees[account] = excluded;
 
         emit ExcludeFromFees(account, excluded);
@@ -223,61 +189,31 @@ contract TOKEN is ERC20, Ownable {
         address _w2,
         address _w3
     ) external onlyOwner {
-        marketing = _w1;
-        dev = _w2;
-        giveAway = _w3;
+        marketingWallet = _w1;
+        devWallet = _w2;
+        charityWallet = _w3;
     }
 
-    function setBuyFees(
-        uint16 lp,
-        uint16 reward,
-        uint16 market,
-        uint16 develop,
-        uint16 giveaway
+    function setFees(
+        uint8 _market,
+        uint8 _charity,
+        uint8 _liq,
+        uint8 _reward,
+        uint8 _dev,
+        uint8 _buyback
     ) external onlyOwner {
-        buyFee.autoLp = lp;
-        buyFee.reward = reward;
-        buyFee.marketing = market;
-        buyFee.dev = develop;
-        buyFee.giveAway = giveaway;
-
-        totalBuyFee =
-            buyFee.autoLp +
-            buyFee.reward +
-            buyFee.marketing +
-            buyFee.dev +
-            buyFee.giveAway;
-    }
-
-    function setSellFees(
-        uint16 lp,
-        uint16 reward,
-        uint16 market,
-        uint16 develop,
-        uint16 giveaway,
-        uint16 buyback
-    ) external onlyOwner {
-        sellFee.autoLp = lp;
-        sellFee.reward = reward;
-        sellFee.marketing = market;
-        sellFee.dev = develop;
-        sellFee.giveAway = giveaway;
-        sellFee.buyBack = buyback;
-
-        totalSellFee =
-            sellFee.autoLp +
-            sellFee.reward +
-            sellFee.marketing +
-            sellFee.dev +
-            sellFee.giveAway +
-            sellFee.buyBack;
+        marketingFee = _market;
+        charityFee = _charity;
+        liquidityFee = _liq;
+        rewardsFee = _reward;
+        devFee = _dev;
+        buybackFee = _buyback;
     }
 
     function setAutomatedMarketMakerPair(address pair, bool value)
         public
         onlyOwner
     {
-
         _setAutomatedMarketMakerPair(pair, value);
     }
 
@@ -289,12 +225,8 @@ contract TOKEN is ERC20, Ownable {
         maxBuyAmount = amount;
     }
 
-    function setCoolDown( uint256 timePeriod) external onlyOwner {
-        timeDelay = timePeriod;
-    }
-
-    function setTrading(bool value) external onlyOwner {
-        enableTrading = value;
+    function enableTrading() external onlyOwner {
+        isTradingEnabled = true;
     }
 
     function setMaxSell(uint256 amount) external onlyOwner {
@@ -305,8 +237,11 @@ contract TOKEN is ERC20, Ownable {
         maxWalletAmount = amount;
     }
 
-    function _setAutomatedMarketMakerPair(address pair, bool value) private {
+    function setBuyBackLimit(uint256 value) external onlyOwner {
+        buybackLimit = value;
+    }
 
+    function _setAutomatedMarketMakerPair(address pair, bool value) private {
         automatedMarketMakerPairs[pair] = value;
 
         if (value) {
@@ -317,9 +252,7 @@ contract TOKEN is ERC20, Ownable {
     }
 
     function updateGasForProcessing(uint256 newValue) public onlyOwner {
-        require(
-            newValue >= 200000 && newValue <= 500000
-        );
+        require(newValue >= 200000 && newValue <= 500000);
 
         emit GasForProcessingUpdated(newValue, gasForProcessing);
         gasForProcessing = newValue;
@@ -416,11 +349,6 @@ contract TOKEN is ERC20, Ownable {
         dividendTracker.processAccount(payable(msg.sender), false);
     }
 
-    function claimOldDividend(address tracker) external {
-        TOKENDividendTracker oldTracker = TOKENDividendTracker(tracker);
-        oldTracker.processAccount(payable(msg.sender), false);
-    }
-
     function getLastProcessedIndex() external view returns (uint256) {
         return dividendTracker.getLastProcessedIndex();
     }
@@ -434,7 +362,6 @@ contract TOKEN is ERC20, Ownable {
         address to,
         uint256 amount
     ) internal override {
-
         if (amount == 0) {
             super._transfer(from, to, 0);
             return;
@@ -443,6 +370,13 @@ contract TOKEN is ERC20, Ownable {
         uint256 contractTokenBalance = balanceOf(address(this));
 
         bool canSwap = contractTokenBalance >= swapTokensAtAmount;
+
+        if (!swapping && !automatedMarketMakerPairs[from]) {
+            uint256 balance = address(this).balance;
+            if (balance > buybackLimit) {
+                swapETHForTokens(buybackLimit.div(10));
+            }
+        }
 
         if (
             canSwap &&
@@ -453,19 +387,7 @@ contract TOKEN is ERC20, Ownable {
         ) {
             swapping = true;
 
-            uint256 balance = address(this).balance;
-            if (balance > uint256(1 * 10**16)) {
-                swapETHForTokens(balance.div(10));
-            }
-
-            uint16 totalFees = totalBuyFee + totalSellFee;
-            uint16 walletFees = sellFee.marketing +
-                sellFee.dev +
-                sellFee.giveAway +
-                sellFee.buyBack +
-                buyFee.marketing +
-                buyFee.dev +
-                buyFee.giveAway;
+            uint16 walletFees = marketingFee + devFee + charityFee;
 
             contractTokenBalance = swapTokensAtAmount;
 
@@ -474,20 +396,20 @@ contract TOKEN is ERC20, Ownable {
             );
             swapAndSendToFee(walletTokens, walletFees);
 
-            uint256 swapTokens = contractTokenBalance
-                .mul(buyFee.autoLp + sellFee.autoLp)
-                .div(totalFees);
+            uint256 swapTokens = contractTokenBalance.mul(liquidityFee).div(
+                totalFees
+            );
 
             swapAndLiquify(swapTokens);
 
-            uint256 sellTokens = contractTokenBalance
-                .mul(buyFee.reward + sellFee.reward)
-                .div(totalFees);
+            uint256 sellTokens = contractTokenBalance.mul(rewardsFee).div(
+                totalFees
+            );
             swapAndSendDividends(sellTokens);
 
-            uint256 buyBackTokens = contractTokenBalance
-                .mul(sellFee.buyBack)
-                .div(totalFees);
+            uint256 buyBackTokens = contractTokenBalance.mul(buybackFee).div(
+                totalFees
+            );
             swapTokensForEth(buyBackTokens);
 
             swapping = false;
@@ -501,25 +423,12 @@ contract TOKEN is ERC20, Ownable {
         }
 
         if (takeFee) {
-            uint256 fees;
-            require(enableTrading, "Trading disabled");
+            require(isTradingEnabled, "Trading not enabled yet");
 
             if (automatedMarketMakerPairs[from]) {
                 require(amount <= maxBuyAmount, "Buy exceeds limit");
-                require(
-                    coolDown[to] + timeDelay <= block.timestamp
-                );
-
-                fees = amount.mul(totalBuyFee).div(1000);
-                coolDown[to] = block.timestamp;
             } else if (automatedMarketMakerPairs[to]) {
                 require(amount <= maxSellAmount, "Sell exceeds limit");
-                require(
-                    coolDown[from] + timeDelay <= block.timestamp
-                );
-
-                fees = amount.mul(totalSellFee).div(1000);
-                coolDown[from] = block.timestamp;
             }
 
             if (!automatedMarketMakerPairs[to]) {
@@ -527,18 +436,11 @@ contract TOKEN is ERC20, Ownable {
                     amount + balanceOf(to) <= maxWalletAmount,
                     "Wallet exceeds limit"
                 );
-                if (!automatedMarketMakerPairs[from]) {
-                    require(
-                        coolDown[from] + timeDelay <= block.timestamp
-                    );
-                    coolDown[from] = block.timestamp;
-                }
             }
 
-            if (fees > 0) {
-                amount = amount.sub(fees);
-                super._transfer(from, address(this), fees);
-            }
+            uint256 fees = amount.mul(totalFees).div(1000);
+            amount = amount.sub(fees);
+            super._transfer(from, address(this), fees);
         }
 
         super._transfer(from, to, amount);
@@ -569,27 +471,17 @@ contract TOKEN is ERC20, Ownable {
     }
 
     function swapAndSendToFee(uint256 tokens, uint16 fees) private {
-        uint256 initialRewardTokenBalance = IERC20(RewardToken).balanceOf(
-            address(this)
-        );
+        uint256 initialBalance = address(this).balance;
+        swapTokensForEth(tokens);
+        uint256 newBalance = address(this).balance.sub(initialBalance);
 
-        swapTokensForRewardToken(tokens);
+        uint256 marketingShare = newBalance.mul(marketingFee).div(fees);
+        uint256 devShare = newBalance.mul(devFee).div(fees);
+        uint256 charityShare = newBalance.mul(charityFee).div(fees);
 
-        uint256 newBalance = (IERC20(RewardToken).balanceOf(address(this))).sub(
-            initialRewardTokenBalance
-        );
-
-        uint256 marketingShare = newBalance
-            .mul(buyFee.marketing + sellFee.marketing)
-            .div(fees);
-        uint256 devShare = newBalance.mul(buyFee.dev + sellFee.dev).div(fees);
-        uint256 giveAwayShare = newBalance
-            .mul(buyFee.giveAway + sellFee.giveAway)
-            .div(fees);
-
-        IERC20(RewardToken).transfer(marketing, marketingShare);
-        IERC20(RewardToken).transfer(dev, devShare);
-        IERC20(RewardToken).transfer(giveAway, giveAwayShare);
+        payable(marketingWallet).transfer(marketingShare);
+        payable(devWallet).transfer(devShare);
+        payable(charityWallet).transfer(charityShare);
     }
 
     function swapAndLiquify(uint256 tokens) private {
@@ -632,32 +524,15 @@ contract TOKEN is ERC20, Ownable {
         address[] memory path = new address[](2);
         path[0] = uniswapV2Router.WETH();
         path[1] = address(this);
- 
-      // make the swap
-        uniswapV2Router.swapExactETHForTokensSupportingFeeOnTransferTokens{value: amount}(
+
+        // make the swap
+        uniswapV2Router.swapExactETHForTokensSupportingFeeOnTransferTokens{
+            value: amount
+        }(
             0, // accept any amount of Tokens
             path,
             address(0xdead), // Burn address
             block.timestamp.add(300)
-        );
- 
-    }
-
-    function swapTokensForRewardToken(uint256 tokenAmount) private {
-        address[] memory path = new address[](3);
-        path[0] = address(this);
-        path[1] = uniswapV2Router.WETH();
-        path[2] = RewardToken;
-
-        _approve(address(this), address(uniswapV2Router), tokenAmount);
-
-        // make the swap
-        uniswapV2Router.swapExactTokensForTokensSupportingFeeOnTransferTokens(
-            tokenAmount,
-            0,
-            path,
-            address(this),
-            block.timestamp
         );
     }
 
@@ -677,24 +552,14 @@ contract TOKEN is ERC20, Ownable {
     }
 
     function swapAndSendDividends(uint256 tokens) private {
-        uint256 initialRewardTokenBalance = IERC20(RewardToken).balanceOf(
-            address(this)
-        );
+        uint256 initialBalance = address(this).balance;
+        swapTokensForEth(tokens);
+        uint256 dividends = address(this).balance.sub(initialBalance);
 
-        swapTokensForRewardToken(tokens);
-
-        uint256 newBalance = (IERC20(RewardToken).balanceOf(address(this))).sub(
-            initialRewardTokenBalance
-        );
-
-        bool success = IERC20(RewardToken).transfer(
-            address(dividendTracker),
-            newBalance
-        );
+        (bool success, ) = address(dividendTracker).call{value: dividends}("");
 
         if (success) {
-            dividendTracker.distributeRewardToken(newBalance);
-            emit SendDividends(tokens, newBalance);
+            emit SendDividends(tokens, dividends);
         }
     }
 }
@@ -723,12 +588,8 @@ contract TOKENDividendTracker is Ownable, DividendPayingToken {
         bool indexed automatic
     );
 
-    constructor(address rewardToken)
-        DividendPayingToken(
-            "TOKEN_Dividen_Tracker",
-            "TOKEN_Dividend_Tracker",
-            rewardToken
-        )
+    constructor()
+        DividendPayingToken("TOKEN_Dividen_Tracker", "TOKEN_Dividend_Tracker")
     {
         claimWait = 3600;
         minimumTokenBalanceForDividends = 20000 * (10**18); //must hold 20000+ tokens
@@ -743,9 +604,7 @@ contract TOKENDividendTracker is Ownable, DividendPayingToken {
     }
 
     function withdrawDividend() public pure override {
-        require(
-            false
-        );
+        require(false);
     }
 
     function excludeFromDividends(address account) external onlyOwner {
