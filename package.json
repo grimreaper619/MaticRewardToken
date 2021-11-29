@@ -1,0 +1,34 @@
+{
+  "name": "jewels",
+  "version": "1.0.0",
+  "description": "Jewels smart contract",
+  "main": "truffle-config.js",
+  "directories": {
+    "test": "test"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/grimreaper619/Contracts.git"
+  },
+  "author": "Grim",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/grimreaper619/Contracts/issues"
+  },
+  "homepage": "https://github.com/grimreaper619/Contracts#readme",
+  "dependencies": {
+    "@chainlink/contracts": "^0.2.1",
+    "@openzeppelin/contracts": "^4.2.0",
+    "@truffle/hdwallet-provider": "^1.4.3",
+    "@uniswap/v2-core": "^1.0.1",
+    "@uniswap/v2-periphery": "^1.1.0-beta.0",
+    "dotenv": "^10.0.0"
+  },
+  "devDependencies": {
+    "solidity-coverage": "^0.7.16",
+    "truffle-plugin-verify": "^0.5.11"
+  }
+}

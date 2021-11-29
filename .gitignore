@@ -1,0 +1,8 @@
+node_modules
+artifacts
+bin
+contracts/artifacts
+.env
+build
+misc/artifacts
+package-lock.json
