@@ -16,7 +16,7 @@ module.exports = async function (deployer, network, accounts) {
 
   await routerInstance.addLiquidityETH(
     tokenInstance.address,
-    BigInt(supply / 10),
+    BigInt(supply / 2),
     0,
     0,
     routerInstance.address,
